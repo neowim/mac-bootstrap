@@ -67,7 +67,7 @@ if [[ ! -f "$HOMEBREW_PREFIX/bin/brew" ]]; then
     eval "$($HOMEBREW_PREFIX/bin/brew shellenv)"
 fi
 
-brew update
+/opt/homebrew/bin/brew update
 logk
 
 # Install from local Brewfile
@@ -112,6 +112,9 @@ fi
 logk
 
 # Configure macOS settings
+log "Configuring macOS defaults"
+bash "$SCRIPT_DIR/defaults.sh"
+logk
 
 log "System setup complete! 🎉"
 echo "Note: Please manually configure these security settings in System Settings:"
