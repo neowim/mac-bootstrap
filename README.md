@@ -36,7 +36,7 @@ xcode-select --install
 
 2. Clone this repository:
 ```bash
-git clone https://github.com/YOUR_USERNAME/mac-bootstrap.git
+git clone https://github.com/neowim/mac-bootstrap.git
 cd mac-bootstrap
 ```
 
