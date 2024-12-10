@@ -104,6 +104,31 @@ log "Applying dotfiles configuration"
 chezmoi apply
 logk
 
+# Setup Zsh plugins and themes
+log "Setting up Zsh plugins and themes"
+mkdir -p ~/.zsh/{plugins,themes}
+
+# Clone Powerlevel10k theme
+if [ ! -d ~/.zsh/themes/powerlevel10k ]; then
+    git clone --depth=1 https://github.com/romkatv/powerlevel10k.git ~/.zsh/themes/powerlevel10k
+fi
+
+# Clone Zsh plugins
+PLUGINS=(
+    "zsh-users/zsh-completions"
+    "zsh-users/zsh-autosuggestions"
+    "zsh-users/zsh-history-substring-search"
+    "zsh-users/zsh-syntax-highlighting"
+)
+
+for repo in "${PLUGINS[@]}"; do
+    plugin_name=$(basename "$repo")
+    if [ ! -d ~/.zsh/plugins/"$plugin_name" ]; then
+        git clone --depth=1 https://github.com/"$repo".git ~/.zsh/plugins/"$plugin_name"
+    fi
+done
+logk
+
 # Check for system updates
 log "Checking for system updates"
 if ! softwareupdate -l 2>&1 | grep -q "No new software available"; then
