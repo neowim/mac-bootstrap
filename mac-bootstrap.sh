@@ -1,18 +1,83 @@
-#!/bin/bash
-# Allow failures in subcommands while still catching major script errors
-set +e
-trap 'if [ $? -ne 0 ]; then echo "Script failed with exit code $?"; fi' EXIT
+#!/usr/bin/env bash
+#
+# A macOS provisioning and setup script with improvements:
+# - Centralized configuration
+# - Timestamped logging (date and time) to both console and a log file
+# - Log file name includes date and time
+# - Functions for repeated checks
+# - Optional flags to skip certain steps (e.g., --skip-filevault, --skip-brewfile, --skip-updates)
+# - Pre-run summary of planned actions
+# - Environment checks (network connectivity)
+# - Clear logging and error reporting, recorded in a dated log file
+#
+# Usage:
+#   ./setup.sh [OPTIONS]
+#
+# Options:
+#   --skip-filevault     Do not enable FileVault or check its status
+#   --skip-brewfile      Do not run 'brew bundle' to install packages from the Brewfile
+#   --skip-updates       Do not check for or install system updates
+#
+# Example:
+#   ./setup.sh --skip-filevault --skip-updates
 
-# Get the directory where the script is located
+###############################################################################
+# Configuration Section
+###############################################################################
+HOMEBREW_PREFIX_ARM64="/opt/homebrew"
+HOMEBREW_PREFIX_INTEL="/usr/local"
+DOTFILES_REPO="https://github.com/neowim/dotfiles.git"
+BREWFILE_NAME="Brewfile"
+DEFAULTS_SCRIPT_NAME="defaults.sh"
+
+# Default action flags
+SKIP_FILEVAULT=false
+SKIP_BREWFILE=false
+SKIP_UPDATES=false
+
+###############################################################################
+# Argument Parsing
+###############################################################################
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        --skip-filevault) SKIP_FILEVAULT=true; shift ;;
+        --skip-brewfile)  SKIP_BREWFILE=true; shift ;;
+        --skip-updates)   SKIP_UPDATES=true; shift ;;
+        *)
+            echo "Unknown option: $1"
+            exit 1
+            ;;
+    esac
+done
+
+###############################################################################
+# Set up Logging
+###############################################################################
+# Determine script directory and log file name with date/time
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
+LOG_DIR="$SCRIPT_DIR/logs"
+mkdir -p "$LOG_DIR"
+LOG_FILE="$LOG_DIR/setup_$(date '+%Y-%m-%d_%H-%M-%S').log"
 
-# Basic functions for output
-log() { echo "→ $1"; }
-logk() { echo "✓ Done"; }
-warn() { echo "⚠️  $1"; }
-abort() { echo "✗ $1" >&2; exit 1; }
+# Timestamp function for logs
+timestamp() { date '+%Y-%m-%d %H:%M:%S'; }
 
-# Function to run commands and continue on error
+# Logging functions
+log()   { echo "$(timestamp) → $*"; }
+logk()  { echo "$(timestamp) ✓ $*"; }
+warn()  { echo "$(timestamp) ⚠️  $*" >&2; }
+abort() { echo "$(timestamp) ✗ $*" >&2; exit 1; }
+
+# Write initial log header
+{
+    echo "========================"
+    echo "Log started at: $(date '+%Y-%m-%d %H:%M:%S')"
+    echo "========================"
+} | tee "$LOG_FILE"
+
+# Redirect all output (stdout and stderr) to tee, which writes to both console and log file
+exec > >(tee -a "$LOG_FILE") 2>&1
+
 try_command() {
     if ! "$@"; then
         warn "Command failed: $*"
@@ -21,16 +86,58 @@ try_command() {
     return 0
 }
 
-# Ensure running as non-root user with admin privileges
+check_installed() {
+    # Usage: check_installed <command> <message if missing>
+    local cmd="$1"
+    local install_msg="$2"
+    if ! command -v "$cmd" >/dev/null 2>&1; then
+        log "$install_msg"
+        return 1
+    fi
+    return 0
+}
+
+###############################################################################
+# Pre-Run Summary
+###############################################################################
+log "Preparation Summary:"
+log "  - Skip FileVault:   $SKIP_FILEVAULT"
+log "  - Skip Brewfile:    $SKIP_BREWFILE"
+log "  - Skip Updates:     $SKIP_UPDATES"
+log "  - Dotfiles Repo:    $DOTFILES_REPO"
+log "  - Brewfile Name:    $BREWFILE_NAME"
+log "  - Defaults Script:  $DEFAULTS_SCRIPT_NAME"
+log ""
+log "About to configure your system with these settings..."
+sleep 2
+
+###############################################################################
+# Basic Checks and Setup
+###############################################################################
+set +e
+trap 'if [ $? -ne 0 ]; then warn "Script failed with exit code $?"; fi' EXIT
+
 [[ $EUID -eq 0 ]] && abort "Run this script as yourself, not root."
 groups | grep -q admin || abort "Add $USER to the admin group."
 
-# Keep system awake during script
 caffeinate -s -w $$ &
 
-# Configure TouchID for sudo if available
-if [[ -f /usr/lib/pam/pam_tid.so ]]; then
-    log "Configuring TouchID for sudo"
+###############################################################################
+# Environment Checks
+###############################################################################
+log "Checking network connectivity..."
+if ping -c1 8.8.8.8 &>/dev/null; then
+    logk "Network connectivity confirmed"
+else
+    abort "No network connectivity detected. Please ensure you're online."
+fi
+
+###############################################################################
+# TouchID for sudo
+###############################################################################
+PAM_TID_PATH=$(find /usr/lib/pam -name 'pam_tid.so*' 2>/dev/null | head -n 1)
+if [[ -n "$PAM_TID_PATH" ]]; then
+    log "Configuring TouchID for sudo using $PAM_TID_PATH"
     PAM_FILE="/etc/pam.d/sudo_local"
     if [[ ! -f $PAM_FILE ]]; then
         echo "# sudo_local: local config file which survives system update" | sudo tee "$PAM_FILE" >/dev/null
@@ -38,95 +145,116 @@ if [[ -f /usr/lib/pam/pam_tid.so ]]; then
     elif ! grep -q "pam_tid.so" "$PAM_FILE"; then
         echo "auth       sufficient     pam_tid.so" | sudo tee -a "$PAM_FILE" >/dev/null
     fi
-    logk
+    logk "TouchID configured"
+else
+    log "TouchID not available on this system"
 fi
 
-# Check and enable FileVault if needed
-log "Checking FileVault status"
-if ! fdesetup status | grep -q "FileVault is On"; then
-    log "Enabling FileVault"
-    sudo fdesetup enable -user "$USER" | tee ~/Desktop/"FileVault Recovery Key.txt"
+###############################################################################
+# FileVault Encryption
+###############################################################################
+if ! $SKIP_FILEVAULT; then
+    log "Checking FileVault status"
+    if ! fdesetup status | grep -q "FileVault is On"; then
+        log "Enabling FileVault"
+        sudo fdesetup enable -user "$USER" | tee ~/Desktop/"FileVault Recovery Key.txt" || warn "Failed to enable FileVault"
+    fi
+    logk "FileVault checked"
+else
+    log "Skipping FileVault setup"
 fi
-logk
 
-# Install Xcode Command Line Tools
+###############################################################################
+# Xcode Command Line Tools
+###############################################################################
 if ! [ -f "/Library/Developer/CommandLineTools/usr/bin/git" ]; then
     log "Installing Xcode Command Line Tools"
     touch /tmp/.com.apple.dt.CommandLineTools.installondemand.in-progress
     PROD=$(softwareupdate -l | grep "\*.*Command Line" | tail -n 1 | sed 's/^[^C]* //')
-    softwareupdate -i "$PROD" --verbose
+    softwareupdate -i "$PROD" --verbose || warn "Command Line Tools installation failed"
     rm /tmp/.com.apple.dt.CommandLineTools.installondemand.in-progress
-    logk
+    logk "Xcode Command Line Tools installed"
+else
+    logk "Xcode Command Line Tools already installed"
 fi
 
 # Accept Xcode license if needed
 if /usr/bin/xcrun clang 2>&1 | grep -q license; then
     log "Accepting Xcode license"
-    sudo xcodebuild -license accept
-    logk
+    sudo xcodebuild -license accept || warn "Failed to accept Xcode license"
+    logk "Xcode license accepted"
 fi
 
-# Install/Update Homebrew
+###############################################################################
+# Homebrew Setup
+###############################################################################
 log "Setting up Homebrew"
 if [[ $(uname -m) == "arm64" ]]; then
-    HOMEBREW_PREFIX="/opt/homebrew"
+    HOMEBREW_PREFIX="$HOMEBREW_PREFIX_ARM64"
 else
-    HOMEBREW_PREFIX="/usr/local"
+    HOMEBREW_PREFIX="$HOMEBREW_PREFIX_INTEL"
 fi
 
 if [[ ! -f "$HOMEBREW_PREFIX/bin/brew" ]]; then
-    /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+    /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)" || warn "Homebrew installation failed"
     eval "$($HOMEBREW_PREFIX/bin/brew shellenv)"
 fi
 
-/opt/homebrew/bin/brew update
-logk
+try_command $HOMEBREW_PREFIX/bin/brew update
+logk "Homebrew setup complete"
 
-# Install from local Brewfile
-if [ -f "$SCRIPT_DIR/Brewfile" ]; then
-    log "Installing packages from Brewfile"
-    # Add Homebrew to PATH if needed
-    if [[ $(uname -m) == "arm64" ]]; then
-        eval "$(/opt/homebrew/bin/brew shellenv)"
+###############################################################################
+# Brewfile Installation
+###############################################################################
+if ! $SKIP_BREWFILE; then
+    if [ -f "$SCRIPT_DIR/$BREWFILE_NAME" ]; then
+        log "Installing packages from $BREWFILE_NAME"
+        if [[ $(uname -m) == "arm64" ]]; then
+            eval "$($HOMEBREW_PREFIX_ARM64/bin/brew shellenv)"
+        else
+            eval "$($HOMEBREW_PREFIX_INTEL/bin/brew shellenv)"
+        fi
+        try_command brew bundle --file="$SCRIPT_DIR/$BREWFILE_NAME" || warn "Some Homebrew installations failed, continuing"
+        logk "Brewfile installations complete"
+    else
+        warn "No $BREWFILE_NAME found in repository; skipping related package installations"
     fi
-    try_command brew bundle --file="$SCRIPT_DIR/Brewfile" || warn "Some Homebrew installations failed, continuing anyway"
-    logk
 else
-    abort "No Brewfile found in repository"
+    log "Skipping Brewfile installations as requested"
 fi
 
-# Setup dotfiles with chezmoi
+###############################################################################
+# Dotfiles with chezmoi
+###############################################################################
 log "Setting up dotfiles with chezmoi"
-if ! command -v chezmoi >/dev/null 2>&1; then
-    brew install chezmoi
-fi
+check_installed chezmoi "Installing chezmoi" || brew install chezmoi
 
-# Initialize chezmoi
 if [ ! -d "$HOME/.local/share/chezmoi" ]; then
     log "Initializing chezmoi with dotfiles repository"
-    chezmoi init https://github.com/neowim/dotfiles.git
-    echo "Note: After setting up SSH keys, you can switch to SSH remote with:"
+    chezmoi init "$DOTFILES_REPO" || warn "Failed to initialize chezmoi repository"
+    echo "Note: After setting up SSH keys, switch to SSH remote with:"
     echo "cd ~/.local/share/chezmoi && git remote set-url origin git@github.com:neowim/dotfiles.git"
 else
     log "Updating existing chezmoi configuration"
-    chezmoi update
+    chezmoi update || warn "Failed to update chezmoi configuration"
 fi
 
-# Apply dotfiles configuration
 log "Applying dotfiles configuration"
-chezmoi apply
-logk
+chezmoi apply || warn "chezmoi apply encountered issues"
+logk "Dotfiles applied"
 
-# Setup Zsh plugins and themes
+###############################################################################
+# Zsh Plugins and Themes
+###############################################################################
 log "Setting up Zsh plugins and themes"
 mkdir -p ~/.zsh/{plugins,themes}
 
-# Clone Powerlevel10k theme
+# Powerlevel10k
 if [ ! -d ~/.zsh/themes/powerlevel10k ]; then
-    git clone --depth=1 https://github.com/romkatv/powerlevel10k.git ~/.zsh/themes/powerlevel10k
+    try_command git clone --depth=1 https://github.com/romkatv/powerlevel10k.git ~/.zsh/themes/powerlevel10k
 fi
 
-# Clone Zsh plugins
+# Common Zsh Plugins
 PLUGINS=(
     "zsh-users/zsh-completions"
     "zsh-users/zsh-autosuggestions"
@@ -137,24 +265,46 @@ PLUGINS=(
 for repo in "${PLUGINS[@]}"; do
     plugin_name=$(basename "$repo")
     if [ ! -d ~/.zsh/plugins/"$plugin_name" ]; then
-        git clone --depth=1 https://github.com/"$repo".git ~/.zsh/plugins/"$plugin_name"
+        try_command git clone --depth=1 https://github.com/"$repo".git ~/.zsh/plugins/"$plugin_name"
     fi
 done
-logk
+logk "Zsh plugins and themes setup complete"
 
-# Check for system updates
-log "Checking for system updates"
-if ! softwareupdate -l 2>&1 | grep -q "No new software available"; then
-    sudo softwareupdate --install --all
+###############################################################################
+# System Updates
+###############################################################################
+if ! $SKIP_UPDATES; then
+    log "Checking for system updates"
+    UPDATE_LIST=$(softwareupdate -l 2>&1)
+    if echo "$UPDATE_LIST" | grep -q "No new software available"; then
+        logk "No new system updates available"
+    else
+        log "Available updates:"
+        echo "$UPDATE_LIST" | grep "recommended"
+        log "Installing updates..."
+        sudo softwareupdate --install --all || warn "Some updates failed"
+        logk "System updates complete"
+    fi
+else
+    log "Skipping system updates as requested"
 fi
-logk
 
-# Configure macOS settings
-log "Configuring macOS defaults"
-bash "$SCRIPT_DIR/defaults.sh"
-logk
+###############################################################################
+# macOS Defaults Configuration
+###############################################################################
+if [ -f "$SCRIPT_DIR/$DEFAULTS_SCRIPT_NAME" ]; then
+    log "Configuring macOS defaults"
+    bash "$SCRIPT_DIR/$DEFAULTS_SCRIPT_NAME" || warn "Defaults script encountered issues"
+    logk "macOS defaults configured"
+else
+    warn "No $DEFAULTS_SCRIPT_NAME found, skipping macOS defaults configuration"
+fi
 
+###############################################################################
+# Final Notes
+###############################################################################
 log "System setup complete! 🎉"
-echo "Note: Please manually configure these security settings in System Settings:"
+log "Log file saved at: $LOG_FILE"
+echo "Please manually configure these security settings in System Settings:"
 echo "1. Security & Privacy → Require password immediately after sleep or screen saver begins"
 echo "2. Security & Privacy → Turn on Firewall"
