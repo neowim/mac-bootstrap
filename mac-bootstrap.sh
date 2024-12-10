@@ -1,5 +1,7 @@
 #!/bin/bash
-set -e
+# Allow failures in subcommands while still catching major script errors
+set +e
+trap 'exit_code=$?; if [ $exit_code -ne 0 ]; then echo "Script failed with exit code $exit_code"; fi' EXIT
 
 # Get the directory where the script is located
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
@@ -7,7 +9,17 @@ SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 # Basic functions for output
 log() { echo "→ $1"; }
 logk() { echo "✓ Done"; }
+warn() { echo "⚠️  $1"; }
 abort() { echo "✗ $1" >&2; exit 1; }
+
+# Function to run commands and continue on error
+try_command() {
+    if ! "$@"; then
+        warn "Command failed: $*"
+        return 1
+    fi
+    return 0
+}
 
 # Ensure running as non-root user with admin privileges
 [[ $EUID -eq 0 ]] && abort "Run this script as yourself, not root."
@@ -77,7 +89,7 @@ if [ -f "$SCRIPT_DIR/Brewfile" ]; then
     if [[ $(uname -m) == "arm64" ]]; then
         eval "$(/opt/homebrew/bin/brew shellenv)"
     fi
-    brew bundle --file="$SCRIPT_DIR/Brewfile"
+    try_command brew bundle --file="$SCRIPT_DIR/Brewfile" || warn "Some Homebrew installations failed, continuing anyway"
     logk
 else
     abort "No Brewfile found in repository"
@@ -92,8 +104,9 @@ fi
 # Initialize chezmoi
 if [ ! -d "$HOME/.local/share/chezmoi" ]; then
     log "Initializing chezmoi with dotfiles repository"
-    chezmoi init git@github.com:neowim/dotfiles.git
-    echo "⚠️  You will be prompted for your encryption passphrase to decrypt sensitive files"
+    chezmoi init https://github.com/neowim/dotfiles.git
+    echo "Note: After setting up SSH keys, you can switch to SSH remote with:"
+    echo "cd ~/.local/share/chezmoi && git remote set-url origin git@github.com:neowim/dotfiles.git"
 else
     log "Updating existing chezmoi configuration"
     chezmoi update
