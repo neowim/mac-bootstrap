@@ -82,6 +82,7 @@ The `defaults.sh` script contains macOS system preferences. Edit this file to cu
 - `Brewfile`: Package and application definitions
 - `defaults.sh`: macOS system preferences
 - `.gitignore`: Git ignore rules
+- `logs/`: Log files
 
 ## License
 
