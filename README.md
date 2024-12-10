@@ -68,7 +68,9 @@ The `Brewfile` contains all packages, applications, and fonts that will be insta
 - VS Code extensions
 
 ### System Preferences
+
 The `defaults.sh` script contains macOS system preferences. Edit this file to customize:
+
 - UI preferences
 - Finder settings
 - Dock configuration
