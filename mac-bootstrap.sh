@@ -1,7 +1,7 @@
 #!/bin/bash
 # Allow failures in subcommands while still catching major script errors
 set +e
-trap 'exit_code=$?; if [ $exit_code -ne 0 ]; then echo "Script failed with exit code $exit_code"; fi' EXIT
+trap 'if [ $? -ne 0 ]; then echo "Script failed with exit code $?"; fi' EXIT
 
 # Get the directory where the script is located
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
