@@ -224,14 +224,44 @@ else
 fi
 
 ###############################################################################
+# GPG Setup
+###############################################################################
+log "Setting up GPG"
+check_installed gpg "Installing GPG" || brew install gnupg
+check_installed expect "Installing expect" || brew install expect
+
+# Configure GPG
+mkdir -p ~/.gnupg
+echo 'use-agent' > ~/.gnupg/gpg.conf
+chmod 700 ~/.gnupg
+gpgconf --kill gpg-agent
+
+###############################################################################
 # Dotfiles with chezmoi
 ###############################################################################
 log "Setting up dotfiles with chezmoi"
 check_installed chezmoi "Installing chezmoi" || brew install chezmoi
 
+# Create expect script for handling passphrase input
+cat > /tmp/chezmoi_init.exp << 'EOF'
+#!/usr/bin/expect -f
+set timeout -1
+set passphrase [lindex $argv 0]
+
+spawn chezmoi init https://github.com/neowim/dotfiles.git
+expect "passphrase?"
+send "$passphrase\r"
+expect eof
+EOF
+
+chmod +x /tmp/chezmoi_init.exp
+
 if [ ! -d "$HOME/.local/share/chezmoi" ]; then
     log "Initializing chezmoi with dotfiles repository"
-    chezmoi init "$DOTFILES_REPO" || warn "Failed to initialize chezmoi repository"
+    echo "Please enter your GPG passphrase: "
+    read -s PASSPHRASE
+    /tmp/chezmoi_init.exp "$PASSPHRASE" || warn "Failed to initialize chezmoi repository"
+    rm /tmp/chezmoi_init.exp
     echo "Note: After setting up SSH keys, switch to SSH remote with:"
     echo "cd ~/.local/share/chezmoi && git remote set-url origin git@github.com:neowim/dotfiles.git"
 else
